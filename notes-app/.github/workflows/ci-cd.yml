@@ -1,0 +1,92 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+  ECR_REPO: notes-app
+
+jobs:
+  build-scan-push:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.11"
+
+    - name: Install scanning tools
+      run: pip install codeql gitleaks trivy
+
+    - name: CodeQL SAST
+      uses: github/codeql-action/init@v2
+      with:
+        languages: python
+    - uses: github/codeql-action/analyze@v2
+
+    - name: Secret scan (Gitleaks)
+      uses: zricethezav/gitleaks-action@v1
+      with:
+        args: --exit-code 1
+
+    - name: Build Docker image
+      uses: docker/build-push-action@v3
+      with:
+        context: .
+        push: false
+        tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ github.sha }}
+
+    - name: Trivy vulnerability scan
+      run: trivy image --exit-code 1 ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ github.sha }}
+
+    - name: Login to ECR
+      uses: aws-actions/amazon-ecr-login@v1
+      with:
+        region: ${{ env.AWS_REGION }}
+
+    - name: Push to ECR
+      uses: docker/build-push-action@v3
+      with:
+        push: true
+        tags: |
+          ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:${{ github.sha }}
+          ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPO }}:latest
+
+    - name: Update Helm chart in infra repo
+      uses: actions/checkout@v3
+      with: 
+        repository: you/notes-infra
+
+    - name: Bump image tag in values.yaml
+      run: |
+        cd infra/charts/notes-app
+        yq eval ".image.tag = \"${{ github.sha }}\"" -i values.yaml
+        git config user.name github-actions
+        git config user.email actions@github.com
+        git add values.yaml
+        git commit -m "ci: bump image tag to ${{ github.sha }}"
+        git push
+
+  deploy:
+    needs: build-scan-push
+    runs-on: ubuntu-latest
+    steps:
+    - name: Login to ArgoCD
+      run: |
+        argocd login ${{ secrets.ARGOCD_SERVER }} \
+          --username ${{ secrets.ARGOCD_USER }} \
+          --password ${{ secrets.ARGOCD_PASSWORD }} \
+          --insecure
+
+    - name: Update ArgoCD App and sync
+      run: |
+        argocd app set notes-app \
+          --revision main
+        argocd app sync notes-app

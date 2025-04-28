@@ -1,0 +1,12 @@
+replicaCount: 2
+
+image:
+  repository: ${{ secrets.AWS_ACCOUNT_ID }}".dkr.ecr.us-east-1.amazonaws.com/notes-app"
+  tag: "latest"
+
+service:
+  port: 5000
+
+rollout:
+  strategy: blueGreen
+  autoPromotionEnabled: true

@@ -1,0 +1,34 @@
+{{- $fullImage := printf "%s:%s" .Values.image.repository .Values.image.tag -}}
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ include "notes-app.fullname" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    {{- if eq .Values.rollout.strategy "canary" }}
+    canary:
+      steps:
+      - setWeight: 20
+      - pause: {}
+    {{- else }}
+    blueGreen:
+      activeService: {{ include "notes-app.fullname" . }}-active
+      previewService: {{ include "notes-app.fullname" . }}-preview
+      autoPromotionEnabled: {{ .Values.rollout.autoPromotionEnabled }}
+    {{- end }}
+  selector:
+    matchLabels:
+      app: {{ include "notes-app.fullname" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "notes-app.fullname" . }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+      - name: notes
+        image: {{ $fullImage }}
+        ports:
+        - containerPort: {{ .Values.service.port }}
